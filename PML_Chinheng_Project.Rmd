@@ -1,0 +1,271 @@
+---
+title: "PML - Course Project "
+author: "Chin Heng"
+---
+
+# Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+Data 
+
+The training data for this project are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+What you should submit
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases. 
+
+1. Your submission should consist of a link to a Github repo with your R markdown and compiled HTML file describing your analysis. Please constrain the text of the writeup to < 2000 words and the number of figures to be less than 5. It will make it easier for the graders if you submit a repo with a gh-pages branch so the HTML page can be viewed online (and you always want to make it easy on graders :-).
+2. You should also apply your machine learning algorithm to the 20 test cases available in the test data above. Please submit your predictions in appropriate format to the programming assignment for automated grading. See the programming assignment for additional details. 
+
+Reproducibility 
+
+Due to security concerns with the exchange of R code, your code will not be run during the evaluation by your classmates. Please be sure that if they download the repo, they will be able to view the compiled HTML version of your analysis. 
+
+## (1) Load Library
+```{r libraries, eval=T, message=F}
+library(rpart)
+library(MASS)
+library(caret)
+library(randomForest)
+```
+
+Setting a random number set 
+```{r seed, eval=T, message=F}
+set.seed(888)
+```
+
+## (2) Loading dataset
+
+```{r load_data, eval=T, }
+train <- read.csv("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", sep=",", quote="\"", head=T, na.strings=c("NA","#DIV/0!"))
+test <- read.csv("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", sep=",", quote="\"", head=T, na.strings=c("NA","#DIV/0!"))
+```
+
+## (3) Cleaning data
+
+```{r dataclean1, eval=T, }
+train$cvtd_timestamp <- as.numeric(strptime(as.character(train$cvtd_timestamp), format = "%d/%m/%Y %H:%M"))
+test$cvtd_timestamp <- as.numeric(strptime(as.character(test$cvtd_timestamp), format = "%d/%m/%Y %H:%M"))
+train <- train[,-1]
+test <- test[,-1]
+```
+
+Vaariable with non valid values are not included from the datasets, NA values are also not useful.
+
+Setting a lower bound in order to marginalize the non-NA variables for it to be valid.
+If the proportion is below the lower bound limit, the variable should be excluded. As it is ineffective for classification of new observations.
+
+This function will return the proportion of NA.
+```{r data_na, eval=T, }
+na.proportion <- function(x)
+{
+  prop <- sum(is.na(x))/length(x)
+}
+```
+
+Apply the function to training set variable
+```{r data_na2, eval=T, }
+train.nas <- apply(train, 2, na.proportion)
+```
+
+Variables with more than 60% of NA values are excluded from training and testing set.
+```{r data_na3, eval=T, }
+excluded.vars <- which(train.nas > 0.60)
+```
+
+Position of the variables in training and testing set is the same, except the last variable in the training set which is response variable _classe_, and counter _problem_id_. for testing set respectively.
+
+```{r , eval=T, }
+colnames(train)[159]
+colnames(test)[159]
+```
+With this the new training and testing data set are created, excluding variables with excessive NA.
+
+```{r, eval=T, }
+train2 <- train[,-excluded.vars]
+test2 <- test[,-excluded.vars]
+```
+The total number of variables for the training and test set are reduced.
+
+Next, we will remove variables (drop from dataset) that have 0 variance or not useful variables that will impact the classifcation. 
+```{r, eval=T, }
+nzv <- nearZeroVar(train2, saveMetrics = T)
+near_zero_var_cols <- rownames(nzv[nzv$nzv,])
+near_zero_var_indexes <- which(colnames(train2)==rownames(nzv[nzv$nzv,]))
+near_zero_var_indexes
+```
+
+```{r, eval=T, }
+train2 <- train2[,-near_zero_var_indexes]
+test2 <- test2[,-near_zero_var_indexes]
+```
+
+Then we will find the variables with high correlation by using data.frame with numeric variables.
+
+```{r, eval=T, }
+numeric_vars <- sapply(train2, is.numeric)
+highly_correlated_cols <- findCorrelation(cor(train2[,numeric_vars]), cutoff = .90)
+```
+
+The function "findCorrelation" returns vectors of integers corresponding to columns and suggest elimination of columns from training and testing set while searching for correlation value with more than 90%.  
+```{r, eval=T, }
+excluded.colnames <- colnames(train2[,numeric_vars])[highly_correlated_cols]
+excluded.vars <- which(colnames(train2) %in% excluded.colnames)
+excluded.vars
+```
+
+Some of the correlation coefficients of the high correlated variables with other variables of the training dataset:
+```{r, eval=T, }
+cor(train2$cvtd_timestamp, train2$raw_timestamp_part_1)
+cor(train2$accel_belt_x, train2$pitch_belt)
+cor(train2$accel_belt_y, train2$accel_belt_z)
+cor(train2$accel_belt_z, train2$roll_belt)
+cor(train2$roll_belt, train2$accel_belt_z)
+cor(train2$gyros_arm_y, train2$gyros_arm_x)
+cor(train2$gyros_forearm_z, train2$gyros_dumbbell_z)
+cor(train2$gyros_dumbbell_x, train2$gyros_dumbbell_z)
+```
+
+In order to prevent overfitting the training data and improving prediction rate, we are removing highgly correlated variables from the training dataset. 
+
+After dropping the highly correlated variables, we have created a new testing and training dataset. 
+
+```{r, eval=T, }
+train3 <- train2[, -excluded.vars]
+test3 <- test2[, -excluded.vars]
+```
+
+At this juncture, there is no need to fill or remove the NA values as we have now that we the variables with NA.
+```{r, eval=T, }
+any(is.na(train3))
+any(is.na(test3))
+```
+
+## (4) Models specification for ML
+Now that we have 2 cleaned datasets (training and testing)
+
+We will divide training set another 2 portion (i) Validation set, (ii) testing set 
+
+Validation for sammpling error and testing for estimation and submitted the exercise answers.
+
+In this instance we will use the 60% of observations for the _training set_ and the remaining 40% for the _validation set_.
+```{r, eval=T, }
+inTrain <- createDataPartition(y=train3$classe, p=0.6, list=FALSE)
+training <- train3[inTrain, ]
+validation <- train3[-inTrain, ]
+```
+Removing the "problem_id" variable, progressive variable not present in training set.
+```{r, eval=T, }
+testing <- test3[,-50]
+```
+
+### Model based 
+#### (A) 1st model: Linear Discriminant Analysis
+
+```{r lda, eval=T, message=F, warning=F}
+fitLDA <- train(classe ~ ., data = training, method="lda", preProcess = c("center","scale"))
+predFitLDA <- predict(fitLDA, newdata=validation)
+confMatLDA <- confusionMatrix(predFitLDA, validation$classe)
+```
+
+#### (B) 2nd model: Quadratic Discriminant Analysis
+```{r qda, eval=T, }
+fitQDA <- train(classe ~ ., data = training, method="qda", preProcess = c("center","scale"))
+predFitQDA <- predict(fitQDA, newdata=validation)
+confMatQDA <- confusionMatrix(predFitQDA, validation$classe)
+```
+
+## (5) Prediction using randomForest & trees
+
+### (C) 1st model: Classification Tree
+In this instance, we will be using 4 fold cross validation to prevent overfitting.
+
+```{r rpart, eval=T, }
+fitCT <- train(classe ~ ., data = training, trControl = trainControl(method = "cv", number = 4), method="rpart")
+predFitCT <- predict(fitCT, newdata=validation)
+confMatCT <- confusionMatrix(predFitCT, validation$classe)
+```
+
+```{r tree_fig, fig.height=7, fig.width=8}
+plot(fitCT$finalModel, main="Classification tree")
+text(fitCT$finalModel, cex=0.8, all = T, pretty=T, use.n = T)
+```
+
+### (D) 2nd model: RandomForest
+Similarly, we will be using 4 fold cross validation.
+```{r rf, eval=T, }
+fitRF <- train(classe ~ ., data = training, method="rf", trControl = trainControl(method = "cv", number = 4))
+predFitRF <- predict(fitRF, newdata=validation)
+confMatRF <- confusionMatrix(predFitRF, validation$classe)
+```
+
+## (6) Evaluation the Models
+### Interpreting the confusion matrix
+
+The values of interest based on the confusion matrix as follow:
+
+(i) Accuracy: on the global proportion of  predictions in the validation/testing set;
+and for each response variable class:
+
+(ii) sensitivity: also known as true positive rate. 
+
+(iii) specificity: also know or true negative rate.
+
+(iv) positive predictive value.
+
+(v) negative predicitve value.
+
+### Linear Discriminant Analysis Results
+```{r res_lda, eval=T, }
+confMatLDA
+```
+
+### Quadratic Discriminant Analysis Results
+```{r res_qda, eval=T, }
+confMatQDA
+```
+
+### Classification Tree Results
+```{r res_tree, eval=T, }
+confMatCT
+```
+
+### RandomForest Results
+```{r res_rf, eval=T, }
+confMatRF
+```
+
+We have concluded that RandomForest result show the best results, with high accuracy, senitivity, specificity, positive predicitve value and negative predictiave value.
+
+As such we have selected the ML method to predict the _class_ variable in the testing set.
+
+
+## (7) Final Results
+We will create a single file for each prediction.
+
+```{r final_res, eval=T, }
+pml_write_files = function(x) {
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i], file=filename, quote=FALSE, row.names=FALSE, col.names=FALSE)
+  }
+}
+
+
+testingPred <- predict(fitRF, newdata = testing)
+
+# Predictions made on the testing set
+testingPred
+# Writing one file per predicted outcome on the testing set
+pml_write_files(testingPred)
+```
+ 
